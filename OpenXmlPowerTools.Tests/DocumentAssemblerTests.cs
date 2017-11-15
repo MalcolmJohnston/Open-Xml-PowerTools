@@ -235,14 +235,12 @@ namespace OxPt
         }
 
         [Theory]
-        [InlineData("DA267-DocumentTemplate-MainTemplate.docx", "DA267-DocumentTempalte-SubTemplate", 
-            "DA-DataDocumentTemplate.xml", false)]
-        [InlineData("DA268-DocumentTemplate-MainTemplate.docx", "DA268-DocumentTempalte-SubTemplate",
-            "DA-DataDocumentTemplateNoBreaks.xml", false)]
-        public void DA104_Document_Template(string templateName, string subTemplateName, string data, bool err)
+        [InlineData("DA267-DocumentTemplate-MainTemplate.docx", "DA-DataDocumentTemplate.xml", false)]
+        [InlineData("DA268-DocumentTemplate-MainTemplate.docx", "DA-DataDocumentTemplateNoBreaks.xml", false)]
+        [InlineData("DA269-solar-system.docx", "DA-DataDocuments.xml", false)]
+        public void DA104_Document_Template(string templateName, string data, bool err)
         {
             FileInfo templateDocx = new FileInfo(Path.Combine(TestUtil.SourceDir.FullName, templateName));
-            FileInfo subTemplateDocx = new FileInfo(Path.Combine(TestUtil.SourceDir.FullName, subTemplateName));
             FileInfo dataFile = new FileInfo(Path.Combine(TestUtil.SourceDir.FullName, data));
 
             WmlDocument wmlTemplate = new WmlDocument(templateDocx.FullName, true);
@@ -255,6 +253,14 @@ namespace OxPt
                 string templatePath = ele.Attribute(ns + "TemplatePath").Value;
                 templatePath = Path.Combine(TestUtil.SourceDir.FullName, templatePath);
                 ele.Attribute(ns + "TemplatePath").Value = templatePath;
+            }
+
+            // set the directory for Path attributes
+            foreach (XElement ele in xmldata.XPathSelectElements("//*[@Path]"))
+            {
+                string path = ele.Attribute(ns + "Path").Value;
+                path = Path.Combine(TestUtil.SourceDir.FullName, path);
+                ele.Attribute(ns + "Path").Value = path;
             }
 
             bool returnedTemplateError;

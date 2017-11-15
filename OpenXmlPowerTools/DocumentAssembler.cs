@@ -865,31 +865,10 @@ namespace OpenXmlPowerTools
                     bool subTemplateError = false;
                     templateDoc = AssembleDocument(templateDoc, xmlData, out subTemplateError);
                     
+                    // add a page break at the end of the document
                     if(pageBreakAfter)
                     {
-                        using (OpenXmlMemoryStreamDocument streamDoc = new OpenXmlMemoryStreamDocument(templateDoc))
-                        {
-                            using (WordprocessingDocument document = streamDoc.GetWordprocessingDocument())
-                            {
-                                // get the xdoc
-                                XDocument xdoc = document.MainDocumentPart.GetXDocument();
-                                
-                                // add a page break at the end of the document
-                                xdoc.Root
-                                    .Element(W.body)
-                                    .Elements(W.p)
-                                    .Last()
-                                    .Elements()
-                                    .Last()
-                                    .AddAfterSelf(new XElement(W.r, 
-                                        new XElement(W.br, 
-                                        new XAttribute(W.type, "page"))));
-
-                                // put the xdoc
-                                document.MainDocumentPart.PutXDocument(xdoc);
-                            }
-                            templateDoc = streamDoc.GetModifiedWmlDocument();
-                        }
+                        templateDoc = AddPageBreakAfter(templateDoc);
                     }
 
                     // now embed the templateDoc as a base64encoded byte[]
@@ -909,43 +888,54 @@ namespace OpenXmlPowerTools
                 }
                 if (element.Name == PA.Document)
                 {
-                    var templatePath = (string)element.Attribute(PA.Path);
-                    var templateData = (string)element.Attribute(PA.Data);
+                    var documentPath = (string)element.Attribute(PA.Path);
+                    var documentData = (string)element.Attribute(PA.Data);
+                    var pageBreakAfterString = (string)element.Attribute(PA.PageBreakAfter);
+                    bool pageBreakAfter = (pageBreakAfterString != null && pageBreakAfterString.ToLower() == "true");
 
-                    if (string.IsNullOrWhiteSpace(templatePath) && string.IsNullOrWhiteSpace(templateData))
+                    if (string.IsNullOrWhiteSpace(documentPath) && string.IsNullOrWhiteSpace(documentData))
                     {
                         return CreateContextErrorMessage(element, "Either the Path or Data attribute must be supplied", templateError);
                     }
 
-                    if (!string.IsNullOrWhiteSpace(templatePath) && !string.IsNullOrWhiteSpace(templateData))
+                    if (!string.IsNullOrWhiteSpace(documentPath) && !string.IsNullOrWhiteSpace(documentData))
                     {
                         return CreateContextErrorMessage(element, "Only one of the Path or Data attributes should be supplied", templateError);
                     }
 
                     // if we have a Document Element with a Data attribute
                     // then we simply leave it be for post-processing
-                    if(!string.IsNullOrWhiteSpace(templateData))
+                    if(!string.IsNullOrWhiteSpace(documentData))
                     {
                         return element;
                     }
 
                     // if we have a Document Element with a Path attribute
-                    // then we replace it with a Docukment Element with a Data attribute
+                    // then we replace it with a Document Element with a Data attribute
                     // ready for post-processing
-                    if (!string.IsNullOrWhiteSpace(templatePath))
+                    if (!string.IsNullOrWhiteSpace(documentPath))
                     {
                         // check whether the supplied template file exists
-                        FileInfo fi = EvaluateStringToFileInfo(data, templatePath);
+                        FileInfo fi = EvaluateStringToFileInfo(data, documentPath);
                         if (fi == null || fi.Exists == false)
                         {
-                            return CreateContextErrorMessage(element, $"Template not found at '{templatePath}'", templateError);
+                            return CreateContextErrorMessage(element, $"Document not found at '{documentPath}'", templateError);
                         }
 
-                        templateData = Convert.ToBase64String(File.ReadAllBytes(fi.FullName));
+                        documentData = Convert.ToBase64String(File.ReadAllBytes(fi.FullName));
                     }
-                    
+
+                    // add a page break at the end of the document
+                    if (pageBreakAfter)
+                    {
+                        WmlDocument wmlDocument = new WmlDocument("Temp-Doc.docx", Convert.FromBase64String(documentData));
+                        wmlDocument = AddPageBreakAfter(wmlDocument);
+
+                        documentData = Convert.ToBase64String(wmlDocument.DocumentByteArray);
+                    }
+
                     // now embed the templateDoc as a base64encoded byte[]
-                    string xmlString = $"<Document Data=\"{templateData}\" />";
+                    string xmlString = $"<Document Data=\"{documentData}\" />";
                     XElement sdt = new XElement(W.sdt,
                         new XElement(W.sdtContent,
                         new XElement(W.p,
@@ -1226,6 +1216,35 @@ namespace OpenXmlPowerTools
             catch (ArgumentException) { }
 
             return null;
+        }
+
+        private static WmlDocument AddPageBreakAfter(WmlDocument wmlDocument)
+        {
+            using (OpenXmlMemoryStreamDocument streamDoc = new OpenXmlMemoryStreamDocument(wmlDocument))
+            {
+                using (WordprocessingDocument document = streamDoc.GetWordprocessingDocument())
+                {
+                    // get the xdoc
+                    XDocument xdoc = document.MainDocumentPart.GetXDocument();
+
+                    // add a page break at the end of the document
+                    xdoc.Root
+                        .Element(W.body)
+                        .Elements(W.p)
+                        .Last()
+                        .Elements()
+                        .Last()
+                        .AddAfterSelf(new XElement(W.r,
+                            new XElement(W.br,
+                            new XAttribute(W.type, "page"))));
+
+                    // put the xdoc
+                    document.MainDocumentPart.PutXDocument(xdoc);
+                }
+                wmlDocument = streamDoc.GetModifiedWmlDocument();
+            }
+
+            return wmlDocument;
         }
     }
 }
