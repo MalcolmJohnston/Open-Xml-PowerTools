@@ -59,9 +59,114 @@ namespace OpenXmlPowerTools
                     }
                     templateError = te.HasError;
                 }
-                WmlDocument assembledDocument = new WmlDocument("TempFileName.docx", mem.ToArray());
-                return assembledDocument;
+
+                byteArray = mem.ToArray();
             }
+
+            WmlDocument assembledDocument = new WmlDocument("TempFileName.docx", byteArray);
+            assembledDocument = ProcessEmbeddedDocuments(assembledDocument);
+
+            return assembledDocument;
+        }
+
+        private static WmlDocument ProcessEmbeddedDocuments(WmlDocument wordDoc)
+        {
+            // get children elements of the <w:body> element
+            var q1 = wordDoc
+                .MainDocumentPart
+                .Element(W.body)
+                .Elements();
+
+            // get the first section properties element
+            XElement sectPr = wordDoc.MainDocumentPart.Element(W.body).Element(W.sectPr);
+
+            // project collection of tuples containing element and type
+            var q2 = q1
+                .Select(
+                    e =>
+                    {
+                        string keyForGroupAdjacent = ".NonContentControl";
+                        XElement result = e;
+                        if (e.Name == W.sdt)
+                        {
+                            // parse the xml data
+                            XElement fileElement =  XElement.Parse(e.Element(W.sdtContent)
+                                .Element(W.p)
+                                .Element(W.r)
+                                .Element(W.t)
+                                .Value);
+
+                            // get the default namespace
+                            var ns = fileElement.GetDefaultNamespace();
+
+                            if (fileElement.Name == ns + "Document" &&
+                                fileElement.Attribute(ns + "Data") != null)
+                            {
+                                keyForGroupAdjacent = Guid.NewGuid().ToString();
+                                result = fileElement;
+                            }
+                        }
+                        if (e.Name == W.sectPr)
+                            keyForGroupAdjacent = null;
+                        return new
+                        {
+                            Element = result,
+                            KeyForGroupAdjacent = keyForGroupAdjacent
+                        };
+                    }
+                ).Where(e => e.KeyForGroupAdjacent != null);
+
+            // check whether we have any content controls to process
+            if (!q2.Where(g => g.KeyForGroupAdjacent != ".NonContentControl").Any())
+            {
+                return wordDoc;
+            }
+
+            // group by type
+            var q3 = q2.GroupAdjacent(e => e.KeyForGroupAdjacent);
+
+            // project collection with opened WordProcessingDocument
+            Func<XElement, string> getXmlData = new Func<XElement, string>((el) =>
+            {
+                var ns = el.GetDefaultNamespace();
+                return el.Attribute(ns + "Data").Value;
+            });
+
+            var q4 = q3
+                .Select(g => new
+                {
+                    Group = g,
+                    Document = g.Key != ".NonContentControl" ?
+                        new WmlDocument("temp.docx", 
+                            Convert.FromBase64String(getXmlData(g.ElementAt(0).Element)), true) :
+                        wordDoc
+                });
+
+            // project collection of OpenXml.PowerTools.Source
+            var sources = q4
+                .Select(
+                    g =>
+                    {
+                        if (g.Group.Key == ".NonContentControl")
+                            return new Source(
+                                g.Document,
+                                g.Group
+                                    .First()
+                                    .Element
+                                    .ElementsBeforeSelf()
+                                    .Count(),
+                                g.Group
+                                    .Count(),
+                                true);
+                        else
+                            return new Source(g.Document, false);
+                    }
+                ).ToList();
+
+            // add a final source
+            sources.Add(new Source(wordDoc, sectPr.ElementsBeforeSelf().Count(), 1, true));
+
+            return DocumentBuilder.BuildDocument(sources);
         }
 
         private static void ProcessTemplatePart(XElement data, TemplateError te, OpenXmlPart part)
@@ -100,6 +205,8 @@ namespace OpenXmlPowerTools
             PA.Repeat,
             PA.EndRepeat,
             PA.Table,
+            PA.Document,
+            PA.DocumentTemplate
         };
 
         private static object ForceBlockLevelAsAppropriate(XNode node, TemplateError te)
@@ -300,6 +407,8 @@ namespace OpenXmlPowerTools
         private static List<string> s_AliasList = new List<string>()
         {
             "Content",
+            "DocumentTemplate",
+            "Document",
             "Table",
             "Repeat",
             "EndRepeat",
@@ -491,6 +600,39 @@ namespace OpenXmlPowerTools
                         }
                     },
                     {
+                        PA.Document,
+                        new PASchemaSet()
+                        {
+                            XsdMarkup =
+                             @"<xs:schema attributeFormDefault='unqualified' elementFormDefault='qualified' xmlns:xs='http://www.w3.org/2001/XMLSchema'>
+                                 <xs:element name='Document'>
+                                   <xs:complexType>
+                                     <xs:attribute name='Path' type='xs:string' use='optional' />
+                                     <xs:attribute name='Data' type='xs:string' use='optional' />
+                                     <xs:attribute name='PageBreakAfter' type='xs:boolean' use='optional' />
+                                   </xs:complexType>
+                                 </xs:element>
+                               </xs:schema>",
+                        }
+                    },
+                    {
+                        PA.DocumentTemplate,
+                        new PASchemaSet()
+                        {
+                            XsdMarkup =
+                             @"<xs:schema attributeFormDefault='unqualified' elementFormDefault='qualified' xmlns:xs='http://www.w3.org/2001/XMLSchema'>
+                                 <xs:element name='DocumentTemplate'>
+                                   <xs:complexType>
+                                     <xs:attribute name='Path' type='xs:string' use='optional' />
+                                     <xs:attribute name='Data' type='xs:string' use='optional' />
+                                     <xs:attribute name='Select' type='xs:string' use='optional' />
+                                     <xs:attribute name='PageBreakAfter' type='xs:boolean' use='optional' />
+                                   </xs:complexType>
+                                 </xs:element>
+                               </xs:schema>",
+                        }
+                    },
+                    {
                         PA.Table,
                         new PASchemaSet() {
                             XsdMarkup =
@@ -579,6 +721,8 @@ namespace OpenXmlPowerTools
         private class PA
         {
             public static XName Content = "Content";
+            public static XName DocumentTemplate = "DocumentTemplate";
+            public static XName Document = "Document";
             public static XName Table = "Table";
             public static XName Repeat = "Repeat";
             public static XName EndRepeat = "EndRepeat";
@@ -590,6 +734,9 @@ namespace OpenXmlPowerTools
             public static XName Match = "Match";
             public static XName NotMatch = "NotMatch";
             public static XName Depth = "Depth";
+            public static XName Path = "Path";
+            public static XName Data = "Data";
+            public static XName PageBreakAfter = "PageBreakAfter";
         }
 
         private class PASchemaSet
@@ -631,7 +778,6 @@ namespace OpenXmlPowerTools
 
                     if (para != null)
                     {
-
                         XElement p = new XElement(W.p, para.Elements(W.pPr));
                         foreach(string line in newValue.Split('\n'))
                         {
@@ -654,6 +800,159 @@ namespace OpenXmlPowerTools
                         }
                         return list;
                     }
+                }
+                if (element.Name == PA.DocumentTemplate)
+                {
+                    var templatePath = (string)element.Attribute(PA.Path);
+                    var templateData = (string)element.Attribute(PA.Data);
+                    var xmlXPath = (string)element.Attribute(PA.Select);
+                    var pageBreakAfterString = (string)element.Attribute(PA.PageBreakAfter);
+                    bool pageBreakAfter = (pageBreakAfterString != null && pageBreakAfterString.ToLower() == "true");
+
+                    if (string.IsNullOrWhiteSpace(templatePath) && string.IsNullOrWhiteSpace(templateData))
+                    {
+                        return CreateContextErrorMessage(element, "Either the Path or Data attribute must be supplied", templateError);
+                    }
+
+                    if(!string.IsNullOrWhiteSpace(templatePath) && !string.IsNullOrWhiteSpace(templateData))
+                    {
+                        return CreateContextErrorMessage(element, "Only one of the Path or Data attributes should be supplied", templateError);
+                    }
+
+                    byte[] templateRaw;
+                    if (!string.IsNullOrWhiteSpace(templatePath))
+                    {
+                        // check whether the supplied template file exists
+                        FileInfo fi = EvaluateStringToFileInfo(data, templatePath);
+                        if (fi == null || fi.Exists == false)
+                        {
+                            return CreateContextErrorMessage(element, $"Template not found at '{templatePath}'", templateError);
+                        }
+
+                        templateRaw = File.ReadAllBytes(fi.FullName);
+                    }
+                    else
+                    {
+                        templateRaw = Convert.FromBase64String(templateData);
+                    }
+
+                    // get the xml element that should be passed to the template
+                    XElement xmlData = null;
+                    if (xmlXPath != null)
+                    {
+                        try
+                        {
+                            xmlData = data.XPathSelectElement(xmlXPath);
+                        }
+                        catch (XPathException e)
+                        {
+                            return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
+                        }
+                    }
+
+                    // load the template document
+                    WmlDocument templateDoc = null;
+                    try
+                    {
+                        templateDoc = new WmlDocument("Sub-Template.docx", templateRaw);
+                    }
+                    catch(PowerToolsDocumentException e)
+                    {
+                        return CreateContextErrorMessage(element, "PowerToolsDocumentException: " + e.Message, templateError);
+                    }
+
+                    // process the template
+                    bool subTemplateError = false;
+                    templateDoc = AssembleDocument(templateDoc, xmlData, out subTemplateError);
+                    
+                    if(pageBreakAfter)
+                    {
+                        using (OpenXmlMemoryStreamDocument streamDoc = new OpenXmlMemoryStreamDocument(templateDoc))
+                        {
+                            using (WordprocessingDocument document = streamDoc.GetWordprocessingDocument())
+                            {
+                                // get the xdoc
+                                XDocument xdoc = document.MainDocumentPart.GetXDocument();
+                                
+                                // add a page break at the end of the document
+                                xdoc.Root
+                                    .Element(W.body)
+                                    .Elements(W.p)
+                                    .Last()
+                                    .Elements()
+                                    .Last()
+                                    .AddAfterSelf(new XElement(W.r, 
+                                        new XElement(W.br, 
+                                        new XAttribute(W.type, "page"))));
+
+                                // put the xdoc
+                                document.MainDocumentPart.PutXDocument(xdoc);
+                            }
+                            templateDoc = streamDoc.GetModifiedWmlDocument();
+                        }
+                    }
+
+                    // now embed the templateDoc as a base64encoded byte[]
+                    /*<w:sdt><w:sdtContent>
+                        <w:p w:rsidR="00FB5781" w:rsidRDefault="00AE77E8">
+                        <w:r><w:t>&lt;Document Daata="BASE64" /&gt;</w:t></w:r></w:p></w:sdtContent></w:sdt>
+                    */
+                    
+                    string base64EncodedData = Convert.ToBase64String(templateDoc.DocumentByteArray);
+                    string xmlString = $"<Document Data=\"{base64EncodedData}\" />";
+                    XElement sdt = new XElement(W.sdt,
+                        new XElement(W.sdtContent,
+                        new XElement(W.p,
+                        new XElement(W.r,
+                        new XElement(W.t, xmlString)))));
+                    return sdt;
+                }
+                if (element.Name == PA.Document)
+                {
+                    var templatePath = (string)element.Attribute(PA.Path);
+                    var templateData = (string)element.Attribute(PA.Data);
+
+                    if (string.IsNullOrWhiteSpace(templatePath) && string.IsNullOrWhiteSpace(templateData))
+                    {
+                        return CreateContextErrorMessage(element, "Either the Path or Data attribute must be supplied", templateError);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(templatePath) && !string.IsNullOrWhiteSpace(templateData))
+                    {
+                        return CreateContextErrorMessage(element, "Only one of the Path or Data attributes should be supplied", templateError);
+                    }
+
+                    // if we have a Document Element with a Data attribute
+                    // then we simply leave it be for post-processing
+                    if(!string.IsNullOrWhiteSpace(templateData))
+                    {
+                        return element;
+                    }
+
+                    // if we have a Document Element with a Path attribute
+                    // then we replace it with a Docukment Element with a Data attribute
+                    // ready for post-processing
+                    if (!string.IsNullOrWhiteSpace(templatePath))
+                    {
+                        // check whether the supplied template file exists
+                        FileInfo fi = EvaluateStringToFileInfo(data, templatePath);
+                        if (fi == null || fi.Exists == false)
+                        {
+                            return CreateContextErrorMessage(element, $"Template not found at '{templatePath}'", templateError);
+                        }
+
+                        templateData = Convert.ToBase64String(File.ReadAllBytes(fi.FullName));
+                    }
+                    
+                    // now embed the templateDoc as a base64encoded byte[]
+                    string xmlString = $"<Document Data=\"{templateData}\" />";
+                    XElement sdt = new XElement(W.sdt,
+                        new XElement(W.sdtContent,
+                        new XElement(W.p,
+                        new XElement(W.r,
+                        new XElement(W.t, xmlString)))));
+
+                    return sdt;
                 }
                 if (element.Name == PA.Repeat)
                 {
@@ -830,7 +1129,7 @@ namespace OpenXmlPowerTools
             return errorPara;
         }
 
-        private static string EvaluateXPathToString(XElement element, string xPath, bool optional )
+        private static string EvaluateXPathToString(XElement element, string xPath, bool optional)
         {
             object xPathSelectResult;
             try
@@ -866,7 +1165,67 @@ namespace OpenXmlPowerTools
             }
 
             return xPathSelectResult.ToString();
+        }
 
+        private static FileInfo EvaluateStringToFileInfo(XElement element, string pathOrXPath)
+        {
+            // we have XPath?
+            object xPathSelectResult;
+            try
+            {
+                xPathSelectResult = element.XPathEvaluate(pathOrXPath);
+
+                if ((xPathSelectResult is IEnumerable) && !(xPathSelectResult is string))
+                {
+                    var selectedData = ((IEnumerable)xPathSelectResult).Cast<XObject>();
+                    if (selectedData.Count() == 1)
+                    {
+                        XObject selectedDatum = selectedData.First();
+
+                        if (selectedDatum.NodeType == XmlNodeType.Text)
+                        {
+                            XText text = selectedDatum as XText;
+                            return new FileInfo(text.Value);
+                        }
+                        else if (selectedDatum.NodeType == XmlNodeType.Attribute)
+                        {
+                            XAttribute att = selectedDatum as XAttribute;
+                            return new FileInfo(att.Value);
+                        }
+                        else if (selectedDatum.NodeType == XmlNodeType.Element)
+                        {
+                            // the element should have one child text node
+                            XElement ele = xPathSelectResult as XElement;
+                            if (ele.Nodes().Count() == 1)
+                            {
+                                XText text = ele.Nodes().Where(x => x.NodeType == XmlNodeType.Text)
+                                                        .Select(x => x as XText)
+                                                        .SingleOrDefault();
+
+                                if (text != null)
+                                {
+                                    return new FileInfo(text.Value);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (XPathException) // suppress the xpath exception
+            {
+            }
+
+            // check whether the xPath is actually just a file path
+            try
+            {
+                return new FileInfo(pathOrXPath);
+            }
+            // supress exceptions that may occur if the path is actually xPath
+            catch (ArgumentNullException) { }
+            catch (NotSupportedException) { }
+            catch (ArgumentException) { }
+
+            return null;
         }
     }
 }

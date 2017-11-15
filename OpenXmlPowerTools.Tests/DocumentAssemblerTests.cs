@@ -26,6 +26,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Linq;
+using System.Xml.XPath;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Validation;
 using OpenXmlPowerTools;
@@ -233,6 +234,51 @@ namespace OxPt
             Assert.Equal(err, returnedTemplateError);
         }
 
+        [Theory]
+        [InlineData("DA267-DocumentTemplate-MainTemplate.docx", "DA267-DocumentTempalte-SubTemplate", 
+            "DA-DataDocumentTemplate.xml", false)]
+        [InlineData("DA268-DocumentTemplate-MainTemplate.docx", "DA268-DocumentTempalte-SubTemplate",
+            "DA-DataDocumentTemplateNoBreaks.xml", false)]
+        public void DA104_Document_Template(string templateName, string subTemplateName, string data, bool err)
+        {
+            FileInfo templateDocx = new FileInfo(Path.Combine(TestUtil.SourceDir.FullName, templateName));
+            FileInfo subTemplateDocx = new FileInfo(Path.Combine(TestUtil.SourceDir.FullName, subTemplateName));
+            FileInfo dataFile = new FileInfo(Path.Combine(TestUtil.SourceDir.FullName, data));
+
+            WmlDocument wmlTemplate = new WmlDocument(templateDocx.FullName, true);
+            XElement xmldata = XElement.Load(dataFile.FullName);
+
+            // set the directory for TemplatePath attributes
+            XNamespace ns = xmldata.GetDefaultNamespace();
+            foreach (XElement ele in xmldata.XPathSelectElements("//*[@TemplatePath]"))
+            {
+                string templatePath = ele.Attribute(ns + "TemplatePath").Value;
+                templatePath = Path.Combine(TestUtil.SourceDir.FullName, templatePath);
+                ele.Attribute(ns + "TemplatePath").Value = templatePath;
+            }
+
+            bool returnedTemplateError;
+            WmlDocument afterAssembling = DocumentAssembler.AssembleDocument(wmlTemplate, xmldata, out returnedTemplateError);
+            var assembledDocx = new FileInfo(Path.Combine(TestUtil.TempDir.FullName, templateDocx.Name.Replace(".docx", "-processed-by-DocumentAssembler.docx")));
+            afterAssembling.SaveAs(assembledDocx.FullName);
+
+            using (MemoryStream ms = new MemoryStream())
+            {
+                OpenSettings openSettings = new OpenSettings();
+                
+                ms.Write(afterAssembling.DocumentByteArray, 0, afterAssembling.DocumentByteArray.Length);
+                using (WordprocessingDocument wDoc = WordprocessingDocument.Open(ms, true))
+                {
+                    OpenXmlValidator v = new OpenXmlValidator(DocumentFormat.OpenXml.FileFormatVersions.Office2013);
+                    var valErrors = v.Validate(wDoc).Where(ve => !s_ExpectedErrors.Contains(ve.Description))
+                                                    .Where(ve => !s_ExpectedErrorsIf5thEdition.Contains(ve.Description));
+                    Assert.Equal(0, valErrors.Count());
+                }
+            }
+
+            Assert.Equal(err, returnedTemplateError);
+        }
+
         private static List<string> s_ExpectedErrors = new List<string>()
         {
             "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:evenHBand' attribute is not declared.",
@@ -249,6 +295,31 @@ namespace OxPt
             "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:noVBand' attribute is not declared.",
             "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:oddHBand' attribute is not declared.",
             "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:oddVBand' attribute is not declared.",
+        };
+
+        private static List<string> s_ExpectedErrorsIf5thEdition = new List<string>()
+        {
+            // the following attributes all exist in the 5th edition of the standard
+            // see the complex type 'CT_StylePaneFilter'
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:allStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:customStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:latentStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:stylesInUse' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:headingStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:numberingStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:tableStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:directFormattingOnRuns' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:directFormattingOnParagraphs' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:directFormattingOnNumbering' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:directFormattingOnTables' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:clearFormatting' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:top3HeadingStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:visibleStyles' attribute is not declared.",
+            "The 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:alternateStyleNames' attribute is not declared.",
+            // assume this is expected as references backwards compatability to 2013
+            "The attribute 'http://schemas.openxmlformats.org/wordprocessingml/2006/main:name' has invalid value 'useWord2013TrackBottomHyphenation'. The Enumeration constraint failed.",
+            // i don't know where to find the wordml schema to check whether this is a 'real' issue
+            "The 'http://schemas.microsoft.com/office/word/2012/wordml:restartNumberingAfterBreak' attribute is not declared.",
         };
     }
 }

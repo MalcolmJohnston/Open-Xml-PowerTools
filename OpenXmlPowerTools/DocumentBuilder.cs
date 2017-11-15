@@ -1198,15 +1198,54 @@ namespace OpenXmlPowerTools
                 e.Name == W.bookmarkEnd))
                 bookmarkElement.Attribute(W.id).Value = bookmarkIdMap[(int)bookmarkElement.Attribute(W.id)].ToString();
 
-            // adjust shape unique ids
-            // This doesn't work because OLEObjects refer to shapes by ID.
-            // Punting on this, because sooner or later, this will be a non-issue.
-            //foreach (var item in newContent.DescendantsAndSelf(VML.shape))
-            //{
-            //    Guid g = Guid.NewGuid();
-            //    string s = "R" + g.ToString().Replace("-", "");
-            //    item.Attribute(NoNamespace.id).Value = s;
-            //}
+            // adjust shape type and shape unique ids
+
+            // firstly get update all the shape type ids
+            Dictionary<string, string> shapeTypeIdMap = new Dictionary<string, string>();
+            foreach(var item in newContent.DescendantsAndSelf(VML.shapetype))
+            {
+                Guid g = Guid.NewGuid();
+                string curId = item.Attribute(NoNamespace.id).Value;
+                string newId = "ST" + g.ToString().Replace("-", "");
+                item.Attribute(NoNamespace.id).Value = newId;
+
+                shapeTypeIdMap[curId] = newId;
+            }
+            
+            // now update the shape ids and their references to shape types
+            Dictionary<string, string> shapeIdMap = new Dictionary<string, string>();
+            foreach (var item in newContent.DescendantsAndSelf(VML.shape))
+            {
+                // update the id
+                Guid g = Guid.NewGuid();
+                string curId = item.Attribute(NoNamespace.id).Value;
+                string newId = "R" + g.ToString().Replace("-", "");
+                item.Attribute(NoNamespace.id).Value = newId;
+
+                shapeIdMap[curId] = newId;
+
+                // update the type attribute on the shape
+                if(item.Attribute(NoNamespace.type) != null)
+                {
+                    // type references are pre-fixed with a '#'
+                    string trimmedAttVal = item.Attribute(NoNamespace.type).Value.Substring(1);
+
+                    if(shapeTypeIdMap.ContainsKey(trimmedAttVal))
+                    {
+                        item.Attribute(NoNamespace.type).Value = $"#{shapeTypeIdMap[trimmedAttVal]}";
+                    }
+                }
+
+            }
+
+            foreach(var item in newContent.DescendantsAndSelf(WP.docPr))
+            {
+                string curName = item.Attribute(NoNamespace.name).Value;
+                if (shapeIdMap.ContainsKey(curName))
+                {
+                    item.Attribute(NoNamespace.name).Value = shapeIdMap[curName];
+                }
+            }
         }
 
         private static void AdjustDocPrIds(WordprocessingDocument newDocument)
