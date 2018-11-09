@@ -41,8 +41,32 @@ namespace OpenXmlPowerTools
             return AssembleDocument(templateDoc, xDoc.Root, out templateError);
         }
 
+        public static WmlDocument AssembleDocument(
+            WmlDocument templateDoc,
+            XmlDocument data,
+            out bool templateError,
+            IContentFormatter contentFormatter)
+        {
+            XDocument xDoc = data.GetXDocument();
+            return AssembleDocument(templateDoc, xDoc.Root, out templateError, contentFormatter);
+        }
+
         public static WmlDocument AssembleDocument(WmlDocument templateDoc, XElement data, out bool templateError)
         {
+            return AssembleDocument(templateDoc, data, out templateError, new DefaultContentFormatter());
+        }
+
+        public static WmlDocument AssembleDocument(
+            WmlDocument templateDoc,
+            XElement data,
+            out bool templateError,
+            IContentFormatter contentFormatter)
+        {
+            if (contentFormatter == null)
+            {
+                throw new OpenXmlPowerToolsException("Cannot assemble document no content formatter provided.");
+            }
+
             byte[] byteArray = templateDoc.DocumentByteArray;
             using (MemoryStream mem = new MemoryStream())
             {
@@ -50,12 +74,14 @@ namespace OpenXmlPowerTools
                 using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(mem, true))
                 {
                     if (RevisionAccepter.HasTrackedRevisions(wordDoc))
+                    {
                         throw new OpenXmlPowerToolsException("Invalid DocumentAssembler template - contains tracked revisions");
+                    }
 
                     var te = new TemplateError();
                     foreach (var part in wordDoc.ContentParts())
                     {
-                        ProcessTemplatePart(data, te, part);
+                        ProcessTemplatePart(data, te, part, contentFormatter);
                     }
                     templateError = te.HasError;
                 }
@@ -64,7 +90,11 @@ namespace OpenXmlPowerTools
             }
         }
 
-        private static void ProcessTemplatePart(XElement data, TemplateError te, OpenXmlPart part)
+        private static void ProcessTemplatePart(
+            XElement data,
+            TemplateError te,
+            OpenXmlPart part,
+            IContentFormatter contentFormatter)
         {
             XDocument xDoc = part.GetXDocument();
 
@@ -87,7 +117,7 @@ namespace OpenXmlPowerTools
             ProcessOrphanEndRepeatEndConditional(xDocRoot, te);
 
             // do the actual content replacement
-            xDocRoot = (XElement)ContentReplacementTransform(xDocRoot, data, te);
+            xDocRoot = (XElement)ContentReplacementTransform(xDocRoot, data, te, contentFormatter);
 
             xDoc.Elements().First().ReplaceWith(xDocRoot);
             part.PutXDocument();
@@ -605,7 +635,11 @@ namespace OpenXmlPowerTools
             public bool HasError = false;
         }
 
-        static object ContentReplacementTransform(XNode node, XElement data, TemplateError templateError)
+        static object ContentReplacementTransform(
+            XNode node,
+            XElement data,
+            TemplateError templateError,
+            IContentFormatter contentFormatter)
         {
             XElement element = node as XElement;
             if (element != null)
@@ -629,31 +663,8 @@ namespace OpenXmlPowerTools
                         return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
                     }
 
-                    if (para != null)
-                    {
-
-                        XElement p = new XElement(W.p, para.Elements(W.pPr));
-                        foreach(string line in newValue.Split('\n'))
-                        {
-                            p.Add(new XElement(W.r,
-                                    para.Elements(W.r).Elements(W.rPr).FirstOrDefault(),
-                                (p.Elements().Count() > 1) ? new XElement(W.br) : null,
-                                new XElement(W.t, line)));
-                        }
-                        return p;
-                    }
-                    else
-                    {
-                        List<XElement> list = new List<XElement>();
-                        foreach(string line in newValue.Split('\n'))
-                        {
-                            list.Add(new XElement(W.r,
-                                run.Elements().Where(e => e.Name != W.t),
-                                (list.Count > 0) ? new XElement(W.br) : null,
-                                new XElement(W.t, line)));
-                        }
-                        return list;
-                    }
+                    // format the content
+                    return contentFormatter.FormatContent(para, run, newValue);
                 }
                 if (element.Name == PA.Repeat)
                 {
@@ -687,7 +698,7 @@ namespace OpenXmlPowerTools
                         {
                             var content = element
                                 .Elements()
-                                .Select(e => ContentReplacementTransform(e, d, templateError))
+                                .Select(e => ContentReplacementTransform(e, d, templateError, contentFormatter))
                                 .ToList();
                             return content;
                         })
@@ -714,7 +725,7 @@ namespace OpenXmlPowerTools
                         .Skip(2)
                         .ToList();
                     var footerRows = footerRowsBeforeTransform
-                        .Select(x => ContentReplacementTransform(x, data, templateError))
+                        .Select(x => ContentReplacementTransform(x, data, templateError, contentFormatter))
                         .ToList();
                     if (protoRow == null)
                         return CreateContextErrorMessage(element, string.Format("Table does not contain a prototype row"), templateError);
@@ -784,14 +795,15 @@ namespace OpenXmlPowerTools
                   
                     if ((match != null && testValue == match) || (notMatch != null && testValue != notMatch))
                     {
-                        var content = element.Elements().Select(e => ContentReplacementTransform(e, data, templateError));
+                        var content = element.Elements().Select(e => ContentReplacementTransform(e, data, templateError, contentFormatter));
                         return content;
                     }
                     return null;
                 }
+
                 return new XElement(element.Name,
                     element.Attributes(),
-                    element.Nodes().Select(n => ContentReplacementTransform(n, data, templateError)));
+                    element.Nodes().Select(n => ContentReplacementTransform(n, data, templateError, contentFormatter)));
             }
             return node;
         }
